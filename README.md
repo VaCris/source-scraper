@@ -47,7 +47,6 @@ pnpm scrape <url>
 Ejemplos:
 
 ```bash
-pnpm scrape https://animeflv.or.at/anime/one-piece/
 pnpm scrape https://ejemplo.com/pelicula/mi-pelicula/
 pnpm scrape https://ejemplo.com/serie/mi-serie/
 ```

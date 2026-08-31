@@ -12,31 +12,55 @@ const isHls = ({ src, type }) => {
   );
 };
 
+const toSource = (url, mimeType = null) => ({
+  url,
+  type: "hls",
+  mimeType,
+  provider: url.includes("zilla-networks.com") ? "zilla" : null,
+});
+
+const normalizeEmbeddedUrl = (value) =>
+  String(value || "")
+    .replace(/\\u0026/g, "&")
+    .replace(/\\\//g, "/")
+    .replace(/&amp;/g, "&");
+
 export const parseEpisodePage = ({ html, pageUrl, absoluteEpisode }) => {
   const $ = cheerio.load(html);
   const sources = [];
 
-  $("video source[src], source[src]").each((_, element) => {
+  $("video source[src], source[src], video[src]").each((_, element) => {
     const src = $(element).attr("src");
     const type = $(element).attr("type") || "";
     if (!src) return;
 
     let absoluteUrl;
     try {
-      absoluteUrl = new URL(src, pageUrl).toString();
+      absoluteUrl = new URL(normalizeEmbeddedUrl(src), pageUrl).toString();
     } catch {
       return;
     }
 
-    if (!isHls({ src: absoluteUrl, type })) return;
-
-    sources.push({
-      url: absoluteUrl,
-      type: "hls",
-      mimeType: type || null,
-      provider: absoluteUrl.includes("zilla-networks.com") ? "zilla" : null,
-    });
+    if (isHls({ src: absoluteUrl, type })) {
+      sources.push(toSource(absoluteUrl, type || null));
+    }
   });
+
+  // Some pages keep player URLs in data attributes or inline scripts instead
+  // of rendering a <source> element in the initial HTML response.
+  const normalizedHtml = normalizeEmbeddedUrl(html);
+  const urlPattern = /https?:\/\/[^\s"'<>]+/gi;
+
+  for (const match of normalizedHtml.matchAll(urlPattern)) {
+    const candidate = match[0].replace(/[),;]+$/, "");
+    if (!isHls({ src: candidate, type: "" })) continue;
+
+    try {
+      sources.push(toSource(new URL(candidate).toString()));
+    } catch {
+      // Ignore malformed embedded URLs.
+    }
+  }
 
   const deduped = [...new Map(sources.map((source) => [source.url, source])).values()];
 

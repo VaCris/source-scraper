@@ -2,7 +2,7 @@
 
 Herramienta de scraping para inspeccionar páginas de contenido multimedia a partir de una URL. Soporta **películas, series y anime** mediante una arquitectura híbrida basada en HTTP, Cheerio y Playwright.
 
-La estrategia principal utiliza HTTP + Cheerio para mantener las ejecuciones rápidas y ligeras. Cuando una página depende de JavaScript y el HTML inicial no contiene suficiente información, **Playwright con Chromium funciona como fallback**, permitiendo analizar el DOM renderizado y detectar solicitudes multimedia realizadas durante la navegación.
+La estrategia principal utiliza HTTP + Cheerio para mantener las ejecuciones rápidas y ligeras. Cuando una página depende de JavaScript y el HTML inicial no contiene suficiente información, **Playwright con Chromium funciona como fallback**, permitiendo analizar el DOM renderizado y detectar solicitudes multimedia realizadas durante la navegación.-
 
 ## Características
 

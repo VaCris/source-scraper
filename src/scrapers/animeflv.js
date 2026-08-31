@@ -1,5 +1,6 @@
 import * as cheerio from "cheerio";
 import { fetchHtml } from "../services/http.js";
+import { renderPage } from "../services/browser.js";
 import { parseAnimePage } from "../parsers/animePage.js";
 import { parseEpisodePage } from "../parsers/episodePage.js";
 import { mapWithConcurrency } from "../utils/concurrency.js";
@@ -26,6 +27,28 @@ const normalizeText = (value) =>
 const extractEpisodeNumber = (value) => {
   const match = String(value || "").match(EPISODE_PATTERN);
   return match ? Number(match[1]) : null;
+};
+
+const sourceFromObservedUrl = (url) => {
+  const value = url.toLowerCase();
+  if (!(value.includes(".m3u8") || value.includes("/m3u8/"))) return null;
+  return {
+    url,
+    type: "hls",
+    mimeType: null,
+    provider: url.includes("zilla-networks.com") ? "zilla" : null,
+    origin: "browser-network",
+  };
+};
+
+const mergeSources = (...groups) => {
+  const map = new Map();
+  for (const group of groups) {
+    for (const source of group || []) {
+      if (source?.url) map.set(source.url, source);
+    }
+  }
+  return [...map.values()];
 };
 
 const parseArchiveEpisodes = ({ html, pageUrl, animeTitle }) => {
@@ -108,17 +131,85 @@ const discoverFromEpisodeArchive = async ({ siteUrl, animeTitle, concurrency }) 
   return [...deduped.values()].sort((a, b) => a.absoluteEpisode - b.absoluteEpisode);
 };
 
+const inspectEpisode = async (episode) => {
+  try {
+    const html = await fetchHtml(episode.pageUrl);
+    let parsed = parseEpisodePage({
+      html,
+      pageUrl: episode.pageUrl,
+      absoluteEpisode: episode.absoluteEpisode,
+    });
+    let renderMethod = "http";
+    let browserError = null;
+
+    if (parsed.sources.length === 0) {
+      try {
+        const rendered = await renderPage(episode.pageUrl);
+        const browserParsed = parseEpisodePage({
+          html: rendered.html,
+          pageUrl: rendered.finalUrl || episode.pageUrl,
+          absoluteEpisode: episode.absoluteEpisode,
+        });
+        const networkSources = rendered.observedMediaUrls
+          .map(sourceFromObservedUrl)
+          .filter(Boolean);
+        parsed.sources = mergeSources(parsed.sources, browserParsed.sources, networkSources);
+        renderMethod = "playwright";
+      } catch (error) {
+        browserError = error.message;
+      }
+    }
+
+    return {
+      ...parsed,
+      renderMethod,
+      browserError,
+      error: null,
+    };
+  } catch (error) {
+    return {
+      absoluteEpisode: episode.absoluteEpisode,
+      pageUrl: episode.pageUrl,
+      sources: [],
+      renderMethod: "http",
+      browserError: null,
+      error: error.message,
+    };
+  }
+};
+
 export const scrapeAnime = async (rawUrl, { concurrency = 4 } = {}) => {
   const pageUrl = assertSupportedUrl(rawUrl);
   const animeHtml = await fetchHtml(pageUrl);
-  const anime = parseAnimePage({ html: animeHtml, pageUrl });
+  let anime = parseAnimePage({ html: animeHtml, pageUrl });
 
   let discoveredEpisodes = anime.episodes;
   let discoveryMethod = "anime-page";
+  let renderMethod = "http";
+  let browserError = null;
 
-  // animeflv.or.at currently renders the episode list dynamically on anime pages,
-  // so a plain HTTP request can contain the heading but zero episode anchors.
-  // Fall back to the site's server-rendered latest-episode archive.
+  if (discoveredEpisodes.length === 0) {
+    try {
+      const rendered = await renderPage(pageUrl, { settleMs: 2500 });
+      const browserAnime = parseAnimePage({
+        html: rendered.html,
+        pageUrl: rendered.finalUrl || pageUrl,
+      });
+
+      if (browserAnime.episodes.length > 0) {
+        anime = {
+          title: browserAnime.title || anime.title,
+          episodes: browserAnime.episodes,
+        };
+        discoveredEpisodes = browserAnime.episodes;
+        discoveryMethod = "anime-page-browser";
+        renderMethod = "playwright";
+      }
+    } catch (error) {
+      browserError = error.message;
+    }
+  }
+
   if (discoveredEpisodes.length === 0) {
     const siteUrl = new URL("/", pageUrl).toString();
     discoveredEpisodes = await discoverFromEpisodeArchive({
@@ -129,32 +220,16 @@ export const scrapeAnime = async (rawUrl, { concurrency = 4 } = {}) => {
     discoveryMethod = "episode-archive";
   }
 
-  const episodes = await mapWithConcurrency(discoveredEpisodes, concurrency, async (episode) => {
-    try {
-      const html = await fetchHtml(episode.pageUrl);
-      return {
-        ...parseEpisodePage({
-          html,
-          pageUrl: episode.pageUrl,
-          absoluteEpisode: episode.absoluteEpisode,
-        }),
-        error: null,
-      };
-    } catch (error) {
-      return {
-        absoluteEpisode: episode.absoluteEpisode,
-        pageUrl: episode.pageUrl,
-        sources: [],
-        error: error.message,
-      };
-    }
-  });
+  const episodes = await mapWithConcurrency(discoveredEpisodes, Math.min(concurrency, 3), inspectEpisode);
 
   return {
     scraper: "animeflv.or.at",
     animeUrl: pageUrl,
     title: anime.title,
+    mediaType: "anime",
     discoveryMethod,
+    renderMethod,
+    browserError,
     episodeCount: episodes.length,
     episodes,
     scrapedAt: new Date().toISOString(),

@@ -248,7 +248,7 @@ La arquitectura permite implementar reglas particulares para sitios cuya estruct
 Actualmente existe un adaptador para URLs con la estructura:
 
 ```text
-https://animeflv.or.at/anime/<slug>/
+https://example.com/anime/<slug>/
 ```
 
 Su proceso de descubrimiento intenta diferentes estrategias:
@@ -285,7 +285,7 @@ src/
 │   ├── episodePage.js
 │   └── genericPage.js
 ├── scrapers/
-│   ├── animeflv.js
+│   ├── anime.js
 │   ├── generic.js
 │   └── index.js
 ├── services/

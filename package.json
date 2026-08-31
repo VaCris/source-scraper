@@ -1,14 +1,16 @@
 {
   "name": "source-scraper",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Generic anime source scraper for extracting episode metadata and direct HLS sources.",
+  "description": "Generic media scraper for movies, series and anime with HTTP and Playwright fallbacks.",
   "scripts": {
     "scrape": "node src/index.js",
-    "scrape:one-piece": "node src/index.js https://animeflv.or.at/anime/one-piece/"
+    "scrape:one-piece": "node src/index.js https://animeflv.or.at/anime/one-piece/",
+    "playwright:install": "playwright install chromium"
   },
   "dependencies": {
-    "cheerio": "^1.1.2"
+    "cheerio": "^1.1.2",
+    "playwright": "^1.55.0"
   }
 }

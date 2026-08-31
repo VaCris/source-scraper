@@ -1,21 +1,26 @@
 # Source Scraper
 
-Herramienta privada de scraping orientada a inspeccionar páginas de contenido multimedia a partir de una URL. El proyecto ya no está limitado a anime: su arquitectura permite trabajar con páginas de **películas, series y anime** mediante adaptadores específicos y un scraper genérico.
+Herramienta privada de scraping orientada a inspeccionar páginas de contenido multimedia a partir de una URL. El proyecto soporta **películas, series y anime** mediante adaptadores específicos y un scraper genérico.
 
-El scraper intenta obtener únicamente la información que la página expone directamente: metadatos, capítulos o episodios relacionados y fuentes multimedia presentes en el HTML. El proyecto está desacoplado de SPlay GO y **no escribe directamente en su base de datos**.
+El flujo principal usa HTTP + Cheerio por ser más ligero. Cuando una página depende de JavaScript y el resultado HTTP parece incompleto, el scraper puede usar **Playwright con Chromium como fallback** para inspeccionar el DOM ya renderizado y observar solicitudes multimedia realizadas por la propia página.
+
+El proyecto está desacoplado de SPlay GO y **no escribe directamente en su base de datos**.
 
 ## Características
 
 - Soporte para películas, series y anime.
 - Entrada mediante una URL individual.
 - Adaptadores específicos para sitios conocidos.
-- Fallback mediante un scraper genérico para otros sitios.
+- Scraper genérico para otros sitios.
+- HTTP + Cheerio como primera estrategia.
+- Playwright como fallback para páginas dinámicas.
 - Extracción de título, descripción y póster.
 - Lectura de JSON-LD / Schema.org cuando está disponible.
 - Detección de episodios y capítulos.
 - Reconocimiento de patrones como `episodio-12`, `episode-12` y `S02E05`.
-- Extracción de fuentes HLS, MP4 y WebM expuestas en el HTML.
+- Extracción de fuentes HLS, MP4 y WebM expuestas por la página.
 - Detección de reproductores mediante `iframe`.
+- Observación de URLs multimedia solicitadas durante el renderizado del navegador.
 - Recorrido de episodios con concurrencia limitada.
 - Deduplicación de enlaces y fuentes.
 - Exportación estructurada a JSON.
@@ -24,12 +29,16 @@ El scraper intenta obtener únicamente la información que la página expone dir
 
 - Node.js moderno con soporte para `fetch` nativo.
 - pnpm.
+- Chromium instalado mediante Playwright.
 
 ## Instalación
 
 ```bash
 pnpm install
+pnpm playwright:install
 ```
+
+El segundo comando instala el Chromium administrado por Playwright.
 
 ## Uso
 
@@ -55,13 +64,13 @@ pnpm scrape https://ejemplo.com/pelicula/mi-pelicula/
 pnpm scrape https://ejemplo.com/serie/mi-serie/
 ```
 
-Cada ejecución genera un archivo dentro de:
+Cada ejecución genera:
 
 ```text
 output/<slug>.json
 ```
 
-La carpeta `output/` está excluida del repositorio mediante `.gitignore`.
+La carpeta `output/` está excluida mediante `.gitignore`.
 
 ## Cómo funciona
 
@@ -76,29 +85,57 @@ Selección de scraper
        └── Scraper genérico
                 │
                 ▼
-          Descarga del HTML
+          HTTP + Cheerio
                 │
                 ▼
-       Extracción de metadatos
+       ¿Resultado suficiente?
+          │             │
+         sí             no
+          │             │
+          │             ▼
+          │       Playwright / Chromium
+          │             │
+          │             ├── DOM renderizado
+          │             └── requests multimedia
+          │             │
+          └─────────────┘
                 │
-       ┌────────┴────────┐
-       ▼                 ▼
-Fuentes multimedia   Episodios/capítulos
-                         │
-                         ▼
-                 Inspección limitada
-                         │
-                         ▼
-                    Resultado JSON
+                ▼
+          Resultado JSON
 ```
 
-Los adaptadores específicos tienen prioridad cuando el dominio y la ruta son reconocidos. Si no existe un adaptador compatible, se utiliza automáticamente el scraper genérico.
+Playwright no se abre necesariamente en cada ejecución. Se utiliza cuando la extracción HTTP no encuentra fuentes o cuando una serie parece no haber expuesto sus episodios en el HTML inicial.
+
+## Playwright fallback
+
+El navegador se ejecuta en modo headless y se reutiliza durante una ejecución del scraper. Cada página usa un contexto separado y el navegador se cierra al terminar el comando.
+
+El fallback puede obtener dos tipos de información adicionales:
+
+1. El HTML después de ejecutar JavaScript.
+2. URLs multimedia observadas en las requests/responses de la página, como `.m3u8`, `.mp4`, `.webm` o rutas que contienen `/m3u8/`.
+
+Cuando Playwright participa, el resultado puede incluir:
+
+```json
+{
+  "renderMethod": "playwright"
+}
+```
+
+Si HTTP fue suficiente:
+
+```json
+{
+  "renderMethod": "http"
+}
+```
+
+Si Chromium no está instalado o Playwright falla, el scraper conserva el resultado HTTP disponible y puede incluir `browserError` con el motivo del fallo.
 
 ## Tipos de contenido
 
-El resultado utiliza `mediaType` cuando existen señales suficientes para determinar el tipo de contenido.
-
-Valores esperados:
+El resultado utiliza `mediaType` cuando existen señales suficientes para determinar el tipo:
 
 ```text
 movie
@@ -111,20 +148,31 @@ No se fuerza una clasificación cuando la página no proporciona información su
 
 ## Fuentes multimedia
 
-El parser genérico puede reconocer fuentes que estén expuestas directamente en el documento, entre ellas:
+El parser puede reconocer:
 
 ```text
-HLS     .m3u8
+HLS     .m3u8 o rutas /m3u8/
 MP4     .mp4
 WebM    .webm
 Iframe  reproductores embebidos
 ```
 
-Encontrar una URL multimedia no garantiza que pueda reproducirse desde otro dominio. El servidor de origen puede aplicar CORS, autenticación, cookies, URLs firmadas, restricciones de origen u otras políticas.
+Las fuentes pueden proceder del DOM, markup o tráfico observado por el navegador. Por ejemplo:
+
+```json
+{
+  "url": "https://media.example/video/master.m3u8",
+  "type": "hls",
+  "mimeType": null,
+  "origin": "browser-network"
+}
+```
+
+Encontrar una URL multimedia **no garantiza que pueda reproducirse desde otro dominio**. El servidor de origen puede aplicar CORS, autenticación, cookies, URLs firmadas, restricciones de origen u otras políticas.
 
 ## Series y episodios
 
-Cuando una página contiene enlaces reconocibles de episodios, el scraper intenta identificar información como:
+Cuando una página contiene enlaces reconocibles de episodios, el scraper intenta identificar patrones como:
 
 ```text
 /episodio-12/
@@ -133,18 +181,19 @@ Cuando una página contiene enlaces reconocibles de episodios, el scraper intent
 /s01e05/
 ```
 
-Cuando es posible, el resultado separa:
+Cuando es posible, el resultado separa temporada y episodio:
 
 ```json
 {
   "season": 1,
   "episode": 5,
   "pageUrl": "https://ejemplo.com/serie/foo/s01e05/",
-  "sources": []
+  "sources": [],
+  "renderMethod": "http"
 }
 ```
 
-La numeración depende de la información publicada por el sitio de origen. El scraper no convierte automáticamente numeración absoluta de episodios a temporadas de servicios externos.
+La numeración depende del sitio de origen. El scraper no transforma automáticamente numeración absoluta a temporadas de servicios externos.
 
 ## Formato de salida
 
@@ -159,32 +208,51 @@ Un resultado genérico puede tener esta forma:
   "description": null,
   "poster": null,
   "sources": [],
+  "renderMethod": "playwright",
+  "browserError": null,
   "itemCount": 2,
   "items": [
     {
       "season": 1,
       "episode": 1,
       "pageUrl": "https://ejemplo.com/serie/foo/s01e01/",
-      "sources": []
+      "sources": [],
+      "renderMethod": "http"
     }
   ],
   "scrapedAt": "2026-08-31T00:00:00.000Z"
 }
 ```
 
-La estructura puede contener información adicional dependiendo del adaptador utilizado.
-
 ## AnimeFLV
 
-Las URLs con la estructura:
+Las URLs con esta estructura:
 
 ```text
 https://animeflv.or.at/anime/<slug>/
 ```
 
-utilizan el adaptador específico de AnimeFLV antes de recurrir al comportamiento genérico.
+usan el adaptador específico de AnimeFLV.
 
-Actualmente existe una limitación conocida: determinadas listas de episodios y reproductores pueden generarse mediante JavaScript y no estar presentes en el HTML obtenido mediante una petición HTTP normal. En esos casos el scraper puede encontrar solamente una parte del catálogo.
+El adaptador intenta, en orden:
+
+```text
+HTML de la ficha
+      ↓
+Playwright sobre la ficha si no hay episodios
+      ↓
+archivo server-rendered como último fallback
+```
+
+Las páginas de episodio también pueden abrirse con Playwright si el HTML HTTP no contiene fuentes.
+
+El campo `discoveryMethod` permite distinguir cómo se encontró el catálogo, por ejemplo:
+
+```text
+anime-page
+anime-page-browser
+episode-archive
+```
 
 ## Arquitectura
 
@@ -200,42 +268,41 @@ src/
 │   ├── generic.js
 │   └── index.js
 ├── services/
+│   ├── browser.js
 │   └── http.js
 └── utils/
     └── concurrency.js
 ```
 
-### `parsers/`
+### `services/browser.js`
 
-Transforma HTML en información estructurada. Los parsers no deberían encargarse de persistencia ni integración con aplicaciones externas.
-
-### `scrapers/`
-
-Coordina las peticiones, selecciona los parsers correspondientes y construye el resultado final.
+Gestiona Chromium mediante Playwright, devuelve el HTML renderizado y registra las URLs multimedia observadas durante la navegación.
 
 ### `services/http.js`
 
-Centraliza las solicitudes HTTP realizadas por el proyecto.
+Centraliza las solicitudes HTTP ligeras.
 
-### `utils/concurrency.js`
+### `parsers/`
 
-Permite procesar múltiples páginas manteniendo un límite de concurrencia.
+Transforma HTML en información estructurada sin encargarse de persistencia.
+
+### `scrapers/`
+
+Coordina HTTP, fallback de navegador, parsers y construcción del resultado final.
 
 ## Añadir un nuevo sitio
 
-Los sitios que necesiten lógica particular deberían implementarse mediante un adaptador independiente en:
+Los sitios que requieran reglas particulares deberían tener un adaptador independiente dentro de:
 
 ```text
 src/scrapers/
 ```
 
-El objetivo es evitar introducir selectores y reglas específicas de múltiples sitios dentro del scraper genérico.
-
-Una integración nueva debería mantener una salida compatible con el modelo general del proyecto para que posteriormente pueda ser procesada por otra aplicación sin depender del sitio original.
+El objetivo es mantener el scraper genérico libre de selectores específicos de cada proveedor.
 
 ## Integración con SPlay GO
 
-Este repositorio funciona como herramienta independiente:
+El proyecto permanece separado de SPlay GO:
 
 ```text
 Source Scraper
@@ -250,13 +317,11 @@ Importador / validación
 SPlay GO API
 ```
 
-La separación es intencional. El scraper descubre y estructura información; otra capa debe validar qué datos se importan y cómo se almacenan.
+La separación es intencional: el scraper descubre y estructura información; otra capa decide qué se importa y cómo se almacena.
 
 ## Limitaciones
 
-El scraper actual trabaja principalmente sobre el HTML obtenido mediante HTTP y **no ejecuta JavaScript del sitio**. Por este motivo, una aplicación que construya completamente su catálogo o reproductor en el navegador puede producir resultados incompletos.
-
-El proyecto tampoco intenta eludir:
+Playwright permite inspeccionar contenido generado por JavaScript, pero no hace que una fuente externa sea automáticamente reutilizable. El proyecto no intenta eludir:
 
 - autenticación;
 - DRM;
@@ -266,7 +331,7 @@ El proyecto tampoco intenta eludir:
 - restricciones de origen o referer;
 - URLs firmadas o mecanismos equivalentes.
 
-Una fuente detectada puede estar técnicamente presente en el HTML y aun así no ser utilizable fuera de su sitio de origen.
+Una fuente puede aparecer en el DOM o en el tráfico del navegador y aun así no ser utilizable fuera del sitio original.
 
 ## Uso responsable
 

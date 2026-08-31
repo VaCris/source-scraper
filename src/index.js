@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { scrapeUrl } from "./scrapers/index.js";
+import { closeBrowser } from "./services/browser.js";
 
 const inputUrl = process.argv[2];
 
@@ -8,6 +9,8 @@ if (!inputUrl) {
   console.error("Uso: pnpm scrape <url-de-pelicula-serie-o-anime>");
   process.exit(1);
 }
+
+let exitCode = 0;
 
 try {
   const result = await scrapeUrl(inputUrl);
@@ -22,6 +25,7 @@ try {
 
   console.log(`Título: ${result.title || slug}`);
   console.log(`Tipo: ${result.mediaType || (result.scraper === "animeflv.or.at" ? "anime/series" : "unknown")}`);
+  if (result.renderMethod) console.log(`Render: ${result.renderMethod}`);
 
   if (Array.isArray(result.episodes)) {
     const withSources = result.episodes.filter((episode) => episode.sources?.length > 0).length;
@@ -37,5 +41,9 @@ try {
   console.log(`Salida: ${outputPath}`);
 } catch (error) {
   console.error(error.message);
-  process.exit(1);
+  exitCode = 1;
+} finally {
+  await closeBrowser().catch(() => {});
 }
+
+process.exitCode = exitCode;

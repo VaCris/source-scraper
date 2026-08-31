@@ -1,0 +1,14 @@
+{
+  "name": "source-scraper",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Generic anime source scraper for extracting episode metadata and direct HLS sources.",
+  "scripts": {
+    "scrape": "node src/index.js",
+    "scrape:one-piece": "node src/index.js https://animeflv.or.at/anime/one-piece/"
+  },
+  "dependencies": {
+    "cheerio": "^1.1.2"
+  }
+}

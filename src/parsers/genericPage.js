@@ -20,6 +20,7 @@ const detectSourceType = (url, mimeType = "") => {
   if (value.includes("m3u8") || value.includes("mpegurl")) return "hls";
   if (value.includes(".mp4") || value.includes("video/mp4")) return "mp4";
   if (value.includes(".webm") || value.includes("video/webm")) return "webm";
+  if (value.includes(".mkv") || value.includes("matroska")) return "mkv";
 
   return "unknown";
 };
@@ -114,7 +115,7 @@ const collectRelatedPages = ($, pageUrl) => {
   const patterns = [
     /episodio[-_\s/]?(\d{1,5})/i,
     /episode[-_\s/]?(\d{1,5})/i,
-    /capitulo[-_\s/]?(\d{1,5})/i,
+    /cap[ií]tulo[-_\s/]?(\d{1,5})/i,
     /season[-_\s/]?(\d{1,3}).*episode[-_\s/]?(\d{1,5})/i,
     /s(\d{1,3})e(\d{1,5})/i,
   ];
@@ -125,22 +126,39 @@ const collectRelatedPages = ($, pageUrl) => {
     if (!url) return;
 
     const text = normalize($(element).text());
+    const dataEpisode = Number($(element).attr("data-ep") || $(element).attr("data-episode"));
     const value = `${url} ${text}`;
     let season = null;
-    let episode = null;
+    let episode = Number.isInteger(dataEpisode) && dataEpisode > 0 ? dataEpisode : null;
 
-    for (const pattern of patterns) {
-      const match = value.match(pattern);
-      if (!match) continue;
+    if (!episode) {
+      try {
+        const parsedUrl = new URL(url);
+        const queryEpisode = Number(
+          parsedUrl.searchParams.get("ep") ||
+          parsedUrl.searchParams.get("episode") ||
+          parsedUrl.searchParams.get("episodio"),
+        );
+        if (Number.isInteger(queryEpisode) && queryEpisode > 0) episode = queryEpisode;
+      } catch {
+        // URL was already normalized above; keep regex fallback for safety.
+      }
+    }
 
-      if (match.length >= 3) {
-        season = Number(match[1]);
-        episode = Number(match[2]);
+    if (!episode) {
+      for (const pattern of patterns) {
+        const match = value.match(pattern);
+        if (!match) continue;
+
+        if (match.length >= 3) {
+          season = Number(match[1]);
+          episode = Number(match[2]);
+          break;
+        }
+
+        episode = Number(match[1]);
         break;
       }
-
-      episode = Number(match[1]);
-      break;
     }
 
     if (!episode) return;
@@ -149,7 +167,7 @@ const collectRelatedPages = ($, pageUrl) => {
       pageUrl: url,
       season,
       episode,
-      label: text || null,
+      label: text || `Episodio ${episode}`,
     });
   });
 
@@ -175,7 +193,11 @@ export const parseGenericPage = ({ html, pageUrl }) => {
     null;
 
   const poster = absoluteUrl(
-    primary?.image?.url || primary?.image || $('meta[property="og:image"]').attr("content"),
+    primary?.image?.url ||
+      primary?.image ||
+      $('meta[property="og:image"]').attr("content") ||
+      $(".banner-poster").attr("src") ||
+      $(".poster img").attr("src"),
     pageUrl,
   );
 

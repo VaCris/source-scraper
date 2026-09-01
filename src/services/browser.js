@@ -1,6 +1,8 @@
 import { chromium } from "playwright";
 
 const MEDIA_URL_PATTERN = /(\.m3u8(?:$|\?)|\/m3u8\/|\.mp4(?:$|\?)|\.webm(?:$|\?))/i;
+const MAX_JSON_RESPONSES = 30;
+const MAX_JSON_BODY_BYTES = 512 * 1024;
 
 let browserPromise;
 
@@ -20,13 +22,50 @@ export const renderPage = async (url, { timeout = 15000, settleMs = 1500 } = {})
   });
   const page = await context.newPage();
   const observedMediaUrls = new Set();
+  const jsonResponses = [];
+  const pendingResponseReads = new Set();
 
   const remember = (candidate) => {
     if (MEDIA_URL_PATTERN.test(candidate)) observedMediaUrls.add(candidate);
   };
 
   page.on("request", (request) => remember(request.url()));
-  page.on("response", (response) => remember(response.url()));
+  page.on("response", (response) => {
+    remember(response.url());
+
+    if (jsonResponses.length >= MAX_JSON_RESPONSES) return;
+
+    const request = response.request();
+    const resourceType = request.resourceType();
+    const contentType = String(response.headers()["content-type"] || "").toLowerCase();
+    const looksJson = contentType.includes("application/json") || contentType.includes("+json");
+
+    if (!looksJson || !["fetch", "xhr"].includes(resourceType)) return;
+
+    const readPromise = (async () => {
+      try {
+        const body = await response.body();
+        if (!body?.length || body.length > MAX_JSON_BODY_BYTES) return;
+
+        const text = body.toString("utf8").trim();
+        if (!text) return;
+
+        const data = JSON.parse(text);
+        if (jsonResponses.length >= MAX_JSON_RESPONSES) return;
+
+        jsonResponses.push({
+          url: response.url(),
+          status: response.status(),
+          data,
+        });
+      } catch {
+        // Ignore unreadable, invalid or already-consumed JSON responses.
+      }
+    })();
+
+    pendingResponseReads.add(readPromise);
+    readPromise.finally(() => pendingResponseReads.delete(readPromise));
+  });
 
   try {
     await page.goto(url, {
@@ -35,6 +74,7 @@ export const renderPage = async (url, { timeout = 15000, settleMs = 1500 } = {})
     });
 
     await page.waitForTimeout(settleMs);
+    await Promise.allSettled([...pendingResponseReads]);
 
     const html = await page.content();
     const title = await page.title();
@@ -83,6 +123,7 @@ export const renderPage = async (url, { timeout = 15000, settleMs = 1500 } = {})
       title,
       observedMediaUrls: [...observedMediaUrls],
       navigationCandidates,
+      jsonResponses,
       finalUrl: page.url(),
     };
   } finally {

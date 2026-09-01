@@ -25,6 +25,97 @@ const mergeSources = (...groups) => {
   return [...map.values()];
 };
 
+const mergeRelatedPages = (...groups) => {
+  const map = new Map();
+  for (const group of groups) {
+    for (const entry of group || []) {
+      if (entry?.pageUrl) map.set(entry.pageUrl, entry);
+    }
+  }
+  return [...map.values()];
+};
+
+const absoluteHttpUrl = (value, pageUrl) => {
+  if (!value) return null;
+
+  try {
+    const url = new URL(value, pageUrl);
+    return ["http:", "https:"].includes(url.protocol) ? url.toString() : null;
+  } catch {
+    return null;
+  }
+};
+
+const extractUrlFromCandidate = (attrs, pageUrl) => {
+  const directAttributes = [
+    "href",
+    "data-href",
+    "data-url",
+    "data-link",
+    "data-src",
+    "data-episode-url",
+  ];
+
+  for (const name of directAttributes) {
+    const url = absoluteHttpUrl(attrs?.[name], pageUrl);
+    if (url) return url;
+  }
+
+  const onclick = attrs?.onclick;
+  if (!onclick) return null;
+
+  const quotedUrl = onclick.match(/["']([^"']+(?:\.php|\/ver\/|\/watch\/|\/episode\/|\/episodio\/)[^"']*)["']/i);
+  return quotedUrl ? absoluteHttpUrl(quotedUrl[1], pageUrl) : null;
+};
+
+const dynamicRelatedPages = (candidates, pageUrl) => {
+  const pages = new Map();
+  const patterns = [
+    /temporada\s*(\d{1,3}).*?(?:episodio|cap[ií]tulo|episode)\s*(\d{1,5})/i,
+    /season\s*(\d{1,3}).*?episode\s*(\d{1,5})/i,
+    /s(\d{1,3})e(\d{1,5})/i,
+    /(?:episodio|cap[ií]tulo|episode)\s*#?[-_:]?\s*(\d{1,5})/i,
+  ];
+
+  for (const candidate of candidates || []) {
+    const attrs = candidate?.attrs || {};
+    const haystack = [candidate?.text, ...Object.values(attrs)].filter(Boolean).join(" ");
+    let season = null;
+    let episode = null;
+
+    for (const pattern of patterns) {
+      const match = haystack.match(pattern);
+      if (!match) continue;
+
+      if (match.length >= 3) {
+        season = Number(match[1]);
+        episode = Number(match[2]);
+      } else {
+        episode = Number(match[1]);
+      }
+      break;
+    }
+
+    if (!episode && /^\d{1,5}$/.test(String(attrs["data-episode"] || ""))) {
+      episode = Number(attrs["data-episode"]);
+    }
+
+    if (!episode) continue;
+
+    const url = extractUrlFromCandidate(attrs, pageUrl);
+    if (!url || url === pageUrl) continue;
+
+    pages.set(url, {
+      pageUrl: url,
+      season,
+      episode,
+      label: candidate?.text || `Episodio ${episode}`,
+    });
+  }
+
+  return [...pages.values()];
+};
+
 const emptyParsedPage = (pageUrl) => ({
   pageUrl,
   title: null,
@@ -49,13 +140,18 @@ const parseWithBrowserFallback = async ({ html = "", pageUrl, forceBrowser = fal
   if (forceBrowser || incomplete || !html) {
     try {
       const rendered = await renderPage(pageUrl);
+      const renderedPageUrl = rendered.finalUrl || pageUrl;
       const browserParsed = parseGenericPage({
         html: rendered.html,
-        pageUrl: rendered.finalUrl || pageUrl,
+        pageUrl: renderedPageUrl,
       });
       const networkSources = rendered.observedMediaUrls
         .map(sourceFromObservedUrl)
         .filter(Boolean);
+      const browserRelatedPages = dynamicRelatedPages(
+        rendered.navigationCandidates,
+        renderedPageUrl,
+      );
 
       parsed = {
         ...parsed,
@@ -69,10 +165,11 @@ const parseWithBrowserFallback = async ({ html = "", pageUrl, forceBrowser = fal
             : parsed.mediaType,
         jsonLdTypes: [...new Set([...parsed.jsonLdTypes, ...browserParsed.jsonLdTypes])],
         sources: mergeSources(parsed.sources, browserParsed.sources, networkSources),
-        relatedPages:
-          browserParsed.relatedPages.length > parsed.relatedPages.length
-            ? browserParsed.relatedPages
-            : parsed.relatedPages,
+        relatedPages: mergeRelatedPages(
+          parsed.relatedPages,
+          browserParsed.relatedPages,
+          browserRelatedPages,
+        ),
       };
       renderMethod = "playwright";
     } catch (error) {

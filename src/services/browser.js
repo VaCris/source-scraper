@@ -38,11 +38,51 @@ export const renderPage = async (url, { timeout = 15000, settleMs = 1500 } = {})
 
     const html = await page.content();
     const title = await page.title();
+    const navigationCandidates = await page.evaluate(() => {
+      const values = [];
+      const attributes = [
+        "href",
+        "data-href",
+        "data-url",
+        "data-link",
+        "data-src",
+        "data-episode-url",
+        "data-episode",
+        "onclick",
+      ];
+
+      const pushCandidate = (element) => {
+        const text = String(element.textContent || "").replace(/\s+/g, " ").trim();
+        const attrs = {};
+
+        for (const name of attributes) {
+          const value = element.getAttribute?.(name);
+          if (value) attrs[name] = value;
+        }
+
+        if (text || Object.keys(attrs).length > 0) {
+          values.push({
+            tag: element.tagName?.toLowerCase() || null,
+            text,
+            attrs,
+          });
+        }
+      };
+
+      document
+        .querySelectorAll(
+          "a[href], button, [role='button'], [data-href], [data-url], [data-link], [data-src], [data-episode-url], [data-episode], [onclick]",
+        )
+        .forEach(pushCandidate);
+
+      return values;
+    });
 
     return {
       html,
       title,
       observedMediaUrls: [...observedMediaUrls],
+      navigationCandidates,
       finalUrl: page.url(),
     };
   } finally {

@@ -25,15 +25,28 @@ const mergeSources = (...groups) => {
   return [...map.values()];
 };
 
-const parseWithBrowserFallback = async ({ html, pageUrl, forceBrowser = false }) => {
-  let parsed = parseGenericPage({ html, pageUrl });
-  let renderMethod = "http";
+const emptyParsedPage = (pageUrl) => ({
+  pageUrl,
+  title: null,
+  description: null,
+  poster: null,
+  mediaType: "unknown",
+  sources: [],
+  relatedPages: [],
+  jsonLdTypes: [],
+});
+
+const parseWithBrowserFallback = async ({ html = "", pageUrl, forceBrowser = false, httpError = null }) => {
+  let parsed = html
+    ? parseGenericPage({ html, pageUrl })
+    : emptyParsedPage(pageUrl);
+  let renderMethod = html ? "http" : "none";
 
   const incomplete =
     parsed.sources.length === 0 ||
     (parsed.mediaType === "series" && parsed.relatedPages.length === 0);
 
-  if (forceBrowser || incomplete) {
+  if (forceBrowser || incomplete || !html) {
     try {
       const rendered = await renderPage(pageUrl);
       const browserParsed = parseGenericPage({
@@ -46,6 +59,7 @@ const parseWithBrowserFallback = async ({ html, pageUrl, forceBrowser = false })
 
       parsed = {
         ...parsed,
+        pageUrl: browserParsed.pageUrl || parsed.pageUrl,
         title: browserParsed.title || parsed.title,
         description: browserParsed.description || parsed.description,
         poster: browserParsed.poster || parsed.poster,
@@ -63,27 +77,44 @@ const parseWithBrowserFallback = async ({ html, pageUrl, forceBrowser = false })
       renderMethod = "playwright";
     } catch (error) {
       parsed.browserError = error.message;
+      if (!html && httpError) {
+        parsed.httpError = httpError.message;
+      }
     }
   }
 
   return { parsed, renderMethod };
 };
 
+const fetchWithBrowserFallback = async (pageUrl) => {
+  try {
+    const html = await fetchHtml(pageUrl);
+    return parseWithBrowserFallback({ html, pageUrl });
+  } catch (httpError) {
+    return parseWithBrowserFallback({
+      html: "",
+      pageUrl,
+      forceBrowser: true,
+      httpError,
+    });
+  }
+};
+
 export const scrapeGeneric = async (rawUrl, { concurrency = 4, followRelated = true } = {}) => {
   const pageUrl = new URL(rawUrl).toString();
-  const html = await fetchHtml(pageUrl);
-  const { parsed: root, renderMethod } = await parseWithBrowserFallback({ html, pageUrl });
+  const { parsed: root, renderMethod } = await fetchWithBrowserFallback(pageUrl);
+
+  if (!root.title && root.sources.length === 0 && root.relatedPages.length === 0 && root.browserError) {
+    const details = [root.httpError, root.browserError].filter(Boolean).join(" | ");
+    throw new Error(details || `No se pudo consultar ${pageUrl}`);
+  }
 
   let items = [];
   if (followRelated && root.relatedPages.length > 0) {
     const candidates = root.relatedPages.slice(0, MAX_RELATED_PAGES);
     items = await mapWithConcurrency(candidates, concurrency, async (entry) => {
       try {
-        const childHtml = await fetchHtml(entry.pageUrl);
-        const { parsed, renderMethod: childRenderMethod } = await parseWithBrowserFallback({
-          html: childHtml,
-          pageUrl: entry.pageUrl,
-        });
+        const { parsed, renderMethod: childRenderMethod } = await fetchWithBrowserFallback(entry.pageUrl);
         return {
           season: entry.season,
           episode: entry.episode,
@@ -93,7 +124,9 @@ export const scrapeGeneric = async (rawUrl, { concurrency = 4, followRelated = t
           sources: parsed.sources,
           renderMethod: childRenderMethod,
           browserError: parsed.browserError || null,
-          error: null,
+          error: parsed.browserError && !parsed.title && parsed.sources.length === 0
+            ? [parsed.httpError, parsed.browserError].filter(Boolean).join(" | ")
+            : null,
         };
       } catch (error) {
         return {
@@ -103,7 +136,7 @@ export const scrapeGeneric = async (rawUrl, { concurrency = 4, followRelated = t
           pageUrl: entry.pageUrl,
           title: null,
           sources: [],
-          renderMethod: "http",
+          renderMethod: "none",
           browserError: null,
           error: error.message,
         };
@@ -121,6 +154,7 @@ export const scrapeGeneric = async (rawUrl, { concurrency = 4, followRelated = t
     jsonLdTypes: root.jsonLdTypes,
     sources: root.sources,
     renderMethod,
+    httpError: root.httpError || null,
     browserError: root.browserError || null,
     itemCount: items.length,
     items,

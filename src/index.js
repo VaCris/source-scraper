@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { scrapeUrl } from "./scrapers/index.js";

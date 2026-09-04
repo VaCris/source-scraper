@@ -2,11 +2,21 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { scrapeUrl } from "./scrapers/index.js";
 import { closeBrowser } from "./services/browser.js";
+import { syncSourcesToSplay } from "./services/splay-api.js";
 
-const inputUrl = process.argv[2];
+const args = process.argv.slice(2);
+const inputUrl = args.find((arg) => !arg.startsWith("--"));
+const syncEnabled = args.includes("--sync");
+const tmdbArg = args.find((arg) => arg.startsWith("--tmdb="));
+const tmdbId = tmdbArg ? Number(tmdbArg.split("=")[1]) : null;
 
 if (!inputUrl) {
-  console.error("Uso: pnpm scrape <url-de-pelicula-serie-o-anime>");
+  console.error("Uso: pnpm scrape <url> [--sync --tmdb=<id>]");
+  process.exit(1);
+}
+
+if (syncEnabled && (!Number.isInteger(tmdbId) || tmdbId <= 0)) {
+  console.error("Para --sync debes indicar un TMDB ID válido con --tmdb=<id>");
   process.exit(1);
 }
 
@@ -39,6 +49,14 @@ try {
   }
 
   console.log(`Salida: ${outputPath}`);
+
+  if (syncEnabled) {
+    const syncResult = await syncSourcesToSplay({ result, tmdbId });
+    console.log(`Fuentes sincronizadas con SPlay: ${syncResult.synced}`);
+    if (syncResult.skipped.length > 0) {
+      console.log(`Fuentes omitidas: ${syncResult.skipped.length}`);
+    }
+  }
 } catch (error) {
   console.error(error.message);
   exitCode = 1;

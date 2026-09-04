@@ -7,6 +7,8 @@ const DEFAULT_PROVIDER_BY_HOST = {
   "zilla-networks.com": "zilla",
 };
 
+const BULK_SIZE = 100;
+
 const normalizeBaseUrl = (value) => String(value || "").trim().replace(/\/$/, "");
 
 const getProviderSlug = (sourceUrl) => {
@@ -67,6 +69,14 @@ const collectCandidateSources = (result) => {
   }
 
   return candidates;
+};
+
+const chunk = (items, size) => {
+  const chunks = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
 };
 
 export const buildSplaySources = ({ result, tmdbId }) => {
@@ -141,29 +151,36 @@ export const syncSourcesToSplay = async ({ result, tmdbId }) => {
 
   const prepared = buildSplaySources({ result, tmdbId });
   if (prepared.sources.length === 0) {
-    return { synced: 0, skipped: prepared.skipped, response: null };
+    return { synced: 0, skipped: prepared.skipped, batches: 0 };
   }
 
-  const response = await fetch(`${baseUrl}/api/admin/sources/bulk`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-admin-api-key": adminApiKey,
-    },
-    body: JSON.stringify({ sources: prepared.sources }),
-    signal: AbortSignal.timeout(20000),
-  });
+  let synced = 0;
+  const batches = chunk(prepared.sources, BULK_SIZE);
 
-  const body = await response.json().catch(() => null);
+  for (const sources of batches) {
+    const response = await fetch(`${baseUrl}/admin/sources/bulk`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-admin-api-key": adminApiKey,
+      },
+      body: JSON.stringify({ sources }),
+      signal: AbortSignal.timeout(20000),
+    });
 
-  if (!response.ok) {
-    const message = body?.message || `SPlay API respondió ${response.status}`;
-    throw new Error(message);
+    const body = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      const message = body?.message || `SPlay API respondió ${response.status}`;
+      throw new Error(message);
+    }
+
+    synced += Array.isArray(body?.sources) ? body.sources.length : sources.length;
   }
 
   return {
-    synced: Array.isArray(body?.sources) ? body.sources.length : prepared.sources.length,
+    synced,
     skipped: prepared.skipped,
-    response: body,
+    batches: batches.length,
   };
 };

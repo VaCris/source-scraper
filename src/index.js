@@ -2,35 +2,85 @@ import "dotenv/config";
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { scrapeUrl } from "./scrapers/index.js";
+import { discoverSourcePage } from "./discovery/index.js";
 import { closeBrowser } from "./services/browser.js";
 import { syncSourcesToSplay } from "./services/splay-api.js";
+import { getTmdbMetadata } from "./services/tmdb.js";
 
 const args = process.argv.slice(2);
-const inputUrl = args.find((arg) => !arg.startsWith("--"));
+const positional = args.filter((arg) => !arg.startsWith("--"));
+const discoverEnabled = args.includes("--discover");
 const syncEnabled = args.includes("--sync");
 const tmdbArg = args.find((arg) => arg.startsWith("--tmdb="));
-const tmdbId = tmdbArg ? Number(tmdbArg.split("=")[1]) : null;
+const typeArg = args.find((arg) => arg.startsWith("--type="));
+const requestedType = typeArg ? typeArg.split("=")[1].toLowerCase() : null;
 
-if (!inputUrl) {
-  console.error("Uso: pnpm scrape <url> [--sync --tmdb=<id>]");
+if (requestedType && !["tv", "movie"].includes(requestedType)) {
+  console.error("--type solo acepta tv o movie");
   process.exit(1);
 }
 
-if (syncEnabled && (!Number.isInteger(tmdbId) || tmdbId <= 0)) {
-  console.error("Para --sync debes indicar un TMDB ID válido con --tmdb=<id>");
-  process.exit(1);
-}
+const resolveInput = async () => {
+  if (discoverEnabled) {
+    const tmdbId = Number(positional[0]);
+    if (!Number.isInteger(tmdbId) || tmdbId <= 0) {
+      throw new Error("Uso: pnpm scrape:tmdb <tmdbId> [--type=tv|movie] [--sync]");
+    }
+
+    const metadata = await getTmdbMetadata({ tmdbId, mediaType: requestedType });
+    if (!metadata) throw new Error(`No se encontró metadata para TMDB ${tmdbId}`);
+
+    console.log(`TMDB: ${metadata.title || metadata.originalTitle || tmdbId} (${metadata.mediaType})`);
+
+    const discovery = await discoverSourcePage(metadata);
+    if (!discovery.url) {
+      const attempted = discovery.attempts.map((item) => item.adapter).join(", ") || "ninguno";
+      throw new Error(`No se encontró una página fuente. Adaptadores probados: ${attempted}`);
+    }
+
+    console.log(`Página encontrada: ${discovery.url}`);
+    console.log(`Discovery: ${discovery.adapter} / ${discovery.discoveryMethod}`);
+
+    return {
+      inputUrl: discovery.url,
+      tmdbId,
+      metadata,
+      discovery,
+    };
+  }
+
+  const inputUrl = positional[0];
+  if (!inputUrl) {
+    throw new Error("Uso: pnpm scrape <url> [--sync --tmdb=<id>]");
+  }
+
+  const tmdbId = tmdbArg ? Number(tmdbArg.split("=")[1]) : null;
+  if (syncEnabled && (!Number.isInteger(tmdbId) || tmdbId <= 0)) {
+    throw new Error("Para --sync debes indicar un TMDB ID válido con --tmdb=<id>");
+  }
+
+  return { inputUrl, tmdbId, metadata: null, discovery: null };
+};
 
 let exitCode = 0;
 
 try {
+  const { inputUrl, tmdbId, metadata, discovery } = await resolveInput();
   const result = await scrapeUrl(inputUrl);
+
+  if (metadata) {
+    result.tmdbId = tmdbId;
+    result.tmdbTitle = metadata.title;
+    result.tmdbMediaType = metadata.mediaType;
+    result.discovery = discovery;
+  }
 
   await mkdir("output", { recursive: true });
 
   const parsedUrl = new URL(inputUrl);
   const slug = parsedUrl.pathname.split("/").filter(Boolean).pop() || parsedUrl.hostname;
-  const outputPath = resolve("output", `${slug}.json`);
+  const outputName = discoverEnabled ? `tmdb-${tmdbId}-${slug}` : slug;
+  const outputPath = resolve("output", `${outputName}.json`);
 
   await writeFile(outputPath, JSON.stringify(result, null, 2) + "\n", "utf8");
 

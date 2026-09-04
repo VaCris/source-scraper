@@ -6,6 +6,7 @@
   "description": "Generic media scraper for movies, series and anime with HTTP and Playwright fallbacks.",
   "scripts": {
     "scrape": "node src/index.js",
+    "scrape:tmdb": "node src/index.js --discover",
     "scrape:one-piece": "node src/index.js https://animeflv.or.at/anime/one-piece/",
     "playwright:install": "playwright install chromium"
   },

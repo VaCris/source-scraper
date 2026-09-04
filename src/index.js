@@ -1,4 +1,4 @@
-import "dotenv/config";
+import { loadEnvFile } from "node:process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { scrapeUrl } from "./scrapers/index.js";
@@ -6,6 +6,12 @@ import { discoverSourcePage } from "./discovery/index.js";
 import { closeBrowser } from "./services/browser.js";
 import { syncSourcesToSplay } from "./services/splay-api.js";
 import { getTmdbMetadata } from "./services/tmdb.js";
+
+try {
+  loadEnvFile();
+} catch (error) {
+  if (error?.code !== "ENOENT") throw error;
+}
 
 const args = process.argv.slice(2);
 const positional = args.filter((arg) => !arg.startsWith("--"));
